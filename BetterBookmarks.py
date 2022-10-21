@@ -2,6 +2,7 @@ import sublime, sublime_plugin, os, collections, json, hashlib, uuid
 
 markHashes = {}
 viewHashes = {}
+windowHashes = {}
 
 # Add our BetterBookmarks cache folder if it doesn't exist
 def plugin_unloaded():
@@ -88,9 +89,12 @@ class BetterBookmarksCommand(sublime_plugin.TextCommand):
          firstNewMark = newMarks[0]
          if firstNewMark not in marks:
             markHash = str(uuid.uuid4())[0:8]
-            viewHashes[markHash] = self.view
+            activeWindow = sublime.active_window()
+            windowHashes[markHash] = activeWindow
+            activeView = activeWindow.active_view()
+            viewHashes[markHash] = activeView
             markHashes[markHash] = firstNewMark
-            self.view.add_regions(markHash, firstNewMark, '', '', sublime.HIDDEN)
+            activeView.add_regions(markHash, [firstNewMark], '', '', sublime.HIDDEN)
             sublime.set_clipboard(markHash)
 
       for mark in newMarks:
@@ -101,6 +105,8 @@ class BetterBookmarksCommand(sublime_plugin.TextCommand):
 
       print("\n\nMARKS: ")
       print(marks)
+      print("\nWINDOWS: ")
+      print(windowHashes)
       print("\nVIEWS: ")
       print(viewHashes)
       print("\nREGIONS: ")
@@ -135,21 +141,27 @@ class BetterBookmarksCommand(sublime_plugin.TextCommand):
 
    def _save_marks(self):
       if not self._is_empty():
-         Log('Saving BBFile for ' + self.filename)
+         print('Saving BBFile for ' + self.filename)
          with open(self._get_cache_filename(), 'w') as fp:
             marks = {'filename': self.view.file_name(), 'bookmarks': {}}
             for layer in self.layers:
                marks['bookmarks'][layer] = [FixRegion(mark) for mark in self.view.get_regions(self._get_region_name(layer))]
             for markHash in markHashes:
-               marks['bookmarks'][markHash] = [FixRegion(markHashes[markHash])]
+               if viewHashes[markHash] == self.view:
+                  marks['bookmarks'][markHash] = [FixRegion(markHashes[markHash])]
             json.dump(marks, fp)
 
    def _goto_selected_mark(self):
+
+     # First expand selection to the entire word
+     self.view.run_command("expand_selection", {"to": "word"})
+
      sel = self.view.sel()
      selectedText = self.view.substr(sel[0])
      if selectedText in markHashes:
+       markWindow = windowHashes[selectedText]
        markView = viewHashes[selectedText]
-       sublime.active_window().focus_view(markView)
+       markWindow.focus_view(markView)
        mark = markView.get_regions(selectedText)[0]
        markView.show_at_center(mark)
        markView.sel().clear()
@@ -166,9 +178,12 @@ class BetterBookmarksCommand(sublime_plugin.TextCommand):
                      self._add_marks([sublime.Region(mark[0], mark[1])], bookmarkType, fromLoad = True)
                else:
                   for mark in data['bookmarks'][bookmarkType]:
+                     # Lesson: active_view ended up recording the wrong view.
+                     # However, there's also no such thing as self.window, and so I HAD to use active_window()
+                     windowHashes[bookmarkType] = sublime.active_window()
                      viewHashes[bookmarkType] = self.view
                      markHashes[bookmarkType] = sublime.Region(mark[0], mark[1])
-                     self.view.add_regions(bookmarkType, sublime.Region(mark[0], mark[1]), '', '', sublime.HIDDEN)
+                     self.view.add_regions(bookmarkType, [sublime.Region(mark[0], mark[1])], '', '', sublime.HIDDEN)
       except Exception as e:
          pass
       self._change_to_layer(Settings().get('default_layer'))
@@ -181,9 +196,10 @@ class BetterBookmarksCommand(sublime_plugin.TextCommand):
             for bookmarkType in data['bookmarks'].keys():
                if bookmarkType != 'bookmarks':
                   for mark in data['bookmarks'][bookmarkType]:
+                     windowHashes[bookmarkType] = sublime.active_window()
                      viewHashes[bookmarkType] = self.view
                      markHashes[bookmarkType] = sublime.Region(mark[0], mark[1])
-                     self.view.add_regions(bookmarkType, sublime.Region(mark[0], mark[1]), '', '', sublime.HIDDEN)
+                     self.view.add_regions(bookmarkType, [sublime.Region(mark[0], mark[1])], '', '', sublime.HIDDEN)
       except Exception as e:
          pass
       self._change_to_layer(Settings().get('default_layer'))
