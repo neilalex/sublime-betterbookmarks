@@ -113,16 +113,6 @@ class BetterBookmarksCommand(sublime_plugin.TextCommand):
          if mark not in marks:
             marks.append(mark)
 
-      print("\n\nMARKS: ")
-      print(marks)
-      print("\nWINDOWS: ")
-      print(windowHashes)
-      print("\nVIEWS: ")
-      print(viewHashes)
-      print("\nREGIONS: ")
-      print(markHashes)
-
-
       self.view.add_regions(region, marks, '', '', 0)
 
       if layer == self.layer:
