@@ -11,7 +11,6 @@ def plugin_unloaded():
       for view in window.views():
          view.run_command('better_bookmarks', {'subcommand': 'on_save'})
 
-
 def plugin_loaded():
    directory = '{:s}/User/BetterBookmarks'.format(sublime.packages_path())
    if not os.path.exists(directory):
@@ -172,7 +171,7 @@ class BetterBookmarksCommand(sublime_plugin.TextCommand):
 
    def _goto_selected_mark(self):
 
-     # First expand selection to the entire word
+     # First expand the current selection to the entire word
      self.view.run_command("expand_selection", {"to": "word"})
 
      sel = self.view.sel()
