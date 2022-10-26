@@ -1,8 +1,9 @@
 import sublime, sublime_plugin, os, collections, json, hashlib, uuid
 
-markHashes = {}
-viewHashes = {}
 windowHashes = {}
+viewHashes = {}
+viewFileHashes = {}
+markHashes = {}
 
 # Add our BetterBookmarks cache folder if it doesn't exist
 def plugin_unloaded():
@@ -90,17 +91,27 @@ class BetterBookmarksCommand(sublime_plugin.TextCommand):
          if firstNewMark not in marks:
             markHash = str(uuid.uuid4())[0:8]
             activeWindow = sublime.active_window()
-            windowHashes[markHash] = activeWindow
+            if markHash in windowHashes:
+               windowHashes[markHash].append(activeWindow)
+            else:
+               windowHashes[markHash] = [activeWindow]
             activeView = activeWindow.active_view()
-            viewHashes[markHash] = activeView
+            if markHash in viewHashes:
+               viewHashes[markHash].append(activeView)
+               viewFileHashes[markHash].append(activeView.file_name())
+            else:
+               viewHashes[markHash] = [activeView]
+               viewFileHashes[markHash] = [activeView.file_name()]
             markHashes[markHash] = firstNewMark
             activeView.add_regions(markHash, [firstNewMark], '', '', sublime.HIDDEN)
             sublime.set_clipboard(markHash)
 
       for mark in newMarks:
-         if mark in marks:
+         # We call on_load every time bookmarks are updated in any other view into the same file
+         # We don't want them being removed in such a scenario, it isn't the user asking to remove them
+         if mark in marks and not fromLoad:
             marks.remove(mark)
-         else:
+         if mark not in marks:
             marks.append(mark)
 
       print("\n\nMARKS: ")
@@ -147,9 +158,17 @@ class BetterBookmarksCommand(sublime_plugin.TextCommand):
             for layer in self.layers:
                marks['bookmarks'][layer] = [FixRegion(mark) for mark in self.view.get_regions(self._get_region_name(layer))]
             for markHash in markHashes:
-               if viewHashes[markHash] == self.view:
-                  marks['bookmarks'][markHash] = [FixRegion(markHashes[markHash])]
+               # It's not enough to just check if the view is the same, since we want to include any bookmarks for the file
+               # initiated in OTHER views as well
+               if self.view.file_name() in viewFileHashes[markHash]:
+                  marks['bookmarks'][markHash] = [FixRegion(mark) for mark in self.view.get_regions(markHash)]
             json.dump(marks, fp)
+         # In case a different view also has the file open that was just saved,
+         # make certain it too contains this view's bookmarks
+         for window in sublime.windows():
+           for viewToCheck in window.views():
+             if (self.view != viewToCheck and self.view.file_name() == viewToCheck.file_name()):
+               viewToCheck.run_command('better_bookmarks', {'subcommand': 'on_load'})
 
    def _goto_selected_mark(self):
 
@@ -159,9 +178,20 @@ class BetterBookmarksCommand(sublime_plugin.TextCommand):
      sel = self.view.sel()
      selectedText = self.view.substr(sel[0])
      if selectedText in markHashes:
-       markWindow = windowHashes[selectedText]
-       markView = viewHashes[selectedText]
+
+       # In case the original window and view for the bookmark has closed, loop to find the earliest still valid one
+       for i in range(0,len(windowHashes[selectedText])):
+         markWindow = windowHashes[selectedText][i]
+         if markWindow.is_valid():
+            break
+       for i in range(0,len(viewHashes[selectedText])):
+         markView = viewHashes[selectedText][i]
+         if markView.is_valid():
+            break
        markWindow.focus_view(markView)
+
+       # If somehow the region covered multiple selections, only take the first of them
+       # (although generally I'm not certain what would happen when creating and saving a bookmark like this)
        mark = markView.get_regions(selectedText)[0]
        markView.show_at_center(mark)
        markView.sel().clear()
@@ -180,24 +210,16 @@ class BetterBookmarksCommand(sublime_plugin.TextCommand):
                   for mark in data['bookmarks'][bookmarkType]:
                      # Lesson: active_view ended up recording the wrong view.
                      # However, there's also no such thing as self.window, and so I HAD to use active_window()
-                     windowHashes[bookmarkType] = sublime.active_window()
-                     viewHashes[bookmarkType] = self.view
-                     markHashes[bookmarkType] = sublime.Region(mark[0], mark[1])
-                     self.view.add_regions(bookmarkType, [sublime.Region(mark[0], mark[1])], '', '', sublime.HIDDEN)
-      except Exception as e:
-         pass
-      self._change_to_layer(Settings().get('default_layer'))
-
-   def _load_bookmarks(self):
-      Log('Loading BBFile for ' + self.filename)
-      try:
-         with open(self._get_cache_filename(), 'r') as fp:
-            data = json.load(fp)
-            for bookmarkType in data['bookmarks'].keys():
-               if bookmarkType != 'bookmarks':
-                  for mark in data['bookmarks'][bookmarkType]:
-                     windowHashes[bookmarkType] = sublime.active_window()
-                     viewHashes[bookmarkType] = self.view
+                     if bookmarkType in windowHashes:
+                        windowHashes[bookmarkType].append(sublime.active_window())
+                     else:
+                        windowHashes[bookmarkType] = [sublime.active_window()]
+                     if bookmarkType in viewHashes:
+                        viewHashes[bookmarkType].append(self.view)
+                        viewFileHashes[bookmarkType].append(self.view.file_name())
+                     else:
+                        viewHashes[bookmarkType] = [self.view]
+                        viewFileHashes[bookmarkType] = [self.view.file_name()]
                      markHashes[bookmarkType] = sublime.Region(mark[0], mark[1])
                      self.view.add_regions(bookmarkType, [sublime.Region(mark[0], mark[1])], '', '', sublime.HIDDEN)
       except Exception as e:
@@ -222,6 +244,10 @@ class BetterBookmarksCommand(sublime_plugin.TextCommand):
          layer = args['layer'] if 'layer' in args else self.layer
 
          self._add_marks(line, layer)
+
+         # This wasn't part of the initial program. Though it doesn't seem to be computationally intensive and it
+         # saves us if for any reason Sublime crashes
+         self._save_marks()
       elif subcommand == 'cycle_mark':
          self.view.run_command('{}_bookmark'.format(args['direction']), {'name': 'better_bookmarks'})
       elif subcommand == 'clear_marks':
@@ -247,7 +273,7 @@ class BetterBookmarksCommand(sublime_plugin.TextCommand):
       elif subcommand == 'on_load':
          self._load_marks()
       elif subcommand == 'on_packageload':
-         self._load_bookmarks()
+         self._load_marks()
       elif subcommand == 'on_save':
          self._save_marks()
       elif subcommand == 'on_close':
@@ -270,6 +296,15 @@ class BetterBookmarksEventListener(sublime_plugin.EventListener):
       view.run_command('better_bookmarks', {'subcommand': subcommand})
 
    def on_load_async(self, view):
+      if Settings().get('uncache_marks_on_load'):
+         self._contact(view, 'on_load')
+
+   def on_reload_async(self, view):
+      if Settings().get('uncache_marks_on_load'):
+         self._contact(view, 'on_load')
+
+   # Wasn't part of the original program, though clones should get the same bookmarks
+   def on_clone_async(self, view):
       if Settings().get('uncache_marks_on_load'):
          self._contact(view, 'on_load')
 
